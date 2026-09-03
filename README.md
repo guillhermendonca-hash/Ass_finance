@@ -33,7 +33,7 @@ Sem o `.env` o app sobe assim mesmo e mostra na tela o que falta configurar.
 ## Banco
 
 As migrações estão em `supabase/migrations/`, para rodar em ordem (`0001` →
-`0005`). Detalhes em [`supabase/README.md`](supabase/README.md).
+`0006`). Detalhes em [`supabase/README.md`](supabase/README.md).
 
 Tabelas da Fase 1: `usuarios`, `contas`, `cartoes`, `categorias`, `lancamentos`.
 
@@ -51,9 +51,16 @@ O vínculo de casal só vale quando **os dois lados se apontam**. Sem isso,
 escrever o id de alguém em `parceiro_id` não abre porta nenhuma — é o que o
 teste cobre no caso do usuário C.
 
-Rodando `./supabase/tests/run_local.sh`, 29 asserções verificam essas
+Rodando `./supabase/tests/run_local.sh`, 45 asserções verificam essas
 fronteiras contra um Postgres real (inclusive as tentativas de escrita
 indevida). Qualquer vazamento derruba o script.
+
+**Uma linha nunca muda de dono pelo cliente.** RLS decide quais *linhas* o
+cliente alcança; ela não decide quais *colunas*. Sem isso, o parceiro com
+acesso a uma linha `casal` podia trocar `usuario_id` e `visibilidade` na mesma
+instrução e se apropriar dela. A migração `0006` revoga o `UPDATE` de tabela
+inteira e concede apenas as colunas funcionais — `usuario_id`, `id`,
+`criado_em` e `atualizado_em` deixam de ser endereçáveis.
 
 ## Stack
 

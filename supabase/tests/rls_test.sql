@@ -55,6 +55,16 @@ insert into public.contas (id, usuario_id, nome, saldo_atual, visibilidade) valu
   ('aa000000-0000-4000-8000-000000000003', (select id from ids where rotulo='A'), 'Conjunta',    2000, 'casal'),
   ('bb000000-0000-4000-8000-000000000001', (select id from ids where rotulo='B'), 'Corrente B',   800, 'privado');
 
+-- Conta com carimbo antigo: trg_atualizado_em so dispara em UPDATE, entao o
+-- valor abaixo sobrevive ao insert e serve de marco para o teste do gatilho.
+insert into public.contas (id, usuario_id, nome, saldo_atual, visibilidade, atualizado_em)
+values ('aa000000-0000-4000-8000-000000000004', (select id from ids where rotulo='A'),
+        'Carimbo', 10, 'privado', timestamptz '2000-01-01 00:00:00+00');
+
+insert into public.cartoes (id, usuario_id, nome, limite, dia_fechamento, dia_vencimento, visibilidade)
+values ('cc000000-0000-4000-8000-000000000001', (select id from ids where rotulo='A'),
+        'Cartao conjunto', 5000, 10, 17, 'casal');
+
 insert into public.lancamentos (usuario_id, tipo, valor, classe, descricao, visibilidade, categoria_id, data)
 select (select id from ids where rotulo='A'), 'gasto', v.valor, 'variavel', v.descr, v.vis,
        (select id from public.categorias where usuario_id = (select id from ids where rotulo='A') and nome = 'Lazer'),
@@ -99,7 +109,7 @@ begin
 
   select count(*) into n from public.contas
    where usuario_id = '11111111-1111-4111-8111-111111111111';
-  perform pg_temp.assert(n = 1, 'das 3 contas de A, B enxerga so a do casal');
+  perform pg_temp.assert(n = 1, 'das 4 contas de A, B enxerga so a do casal');
 
   select count(*) into n from public.usuarios
    where id = '11111111-1111-4111-8111-111111111111';
@@ -196,7 +206,7 @@ begin
   perform pg_temp.assert(n = 3, 'A ve os proprios 3 lancamentos, em qualquer esfera');
 
   select count(*) into n from public.contas where usuario_id = auth.uid();
-  perform pg_temp.assert(n = 3, 'A ve as proprias 3 contas');
+  perform pg_temp.assert(n = 4, 'A ve as proprias 4 contas');
 
   select count(*) into n from public.categorias where usuario_id = auth.uid();
   perform pg_temp.assert(n = 13, 'A recebeu as 13 categorias iniciais no cadastro');
@@ -244,6 +254,164 @@ begin
   exception when check_violation then
     perform pg_temp.assert(true, 'receita so aceita classe receita (classe_coerente_com_tipo)');
   end;
+end $$;
+
+-- =====================================================================
+-- TAR-002A — Posse da linha e colunas editaveis
+--
+-- O ataque que motivou a hotfix: o parceiro edita uma linha 'casal' e, na
+-- MESMA instrucao, troca usuario_id para si e visibilidade para 'privado'.
+-- O USING olhava a linha ANTIGA (casal, do parceiro reciproco) e o WITH
+-- CHECK olhava a linha NOVA (dele) — os dois passavam. Sem privilegio por
+-- coluna, a linha trocava de dono e o dono original perdia acesso.
+--
+-- Cada ataque confere tambem o ESTADO FINAL da linha: capturar a excecao
+-- nao basta, porque uma excecao no lugar errado passaria por defesa.
+-- =====================================================================
+do $$
+declare
+  a_id         constant uuid := '11111111-1111-4111-8111-111111111111';
+  b_id         constant uuid := '22222222-2222-4222-8222-222222222222';
+  conta_casal  constant uuid := 'aa000000-0000-4000-8000-000000000003';
+  cartao_casal constant uuid := 'cc000000-0000-4000-8000-000000000001';
+  conta_carimbo constant uuid := 'aa000000-0000-4000-8000-000000000004';
+  como_a       constant text := format('{"sub":"%s","role":"authenticated"}', '11111111-1111-4111-8111-111111111111');
+  como_b       constant text := format('{"sub":"%s","role":"authenticated"}', '22222222-2222-4222-8222-222222222222');
+  lanc_casal   uuid;
+  dono         uuid;
+  vis          public.visibilidade;
+  txt          text;
+  saldo        numeric;
+  carimbo      timestamptz;
+  parceiro     uuid;
+begin
+  raise notice 'TAR-002A — posse da linha e colunas editaveis:';
+
+  perform set_config('request.jwt.claims', como_a, true);
+  select id into lanc_casal
+    from public.lancamentos
+   where usuario_id = a_id and visibilidade = 'casal'
+   limit 1;
+
+  -- ============================================ B tenta se apropriar
+  perform set_config('request.jwt.claims', como_b, true);
+
+  begin
+    update public.contas
+       set usuario_id = b_id, visibilidade = 'privado'
+     where id = conta_casal;
+    perform pg_temp.assert(false, 'B nao deveria se apropriar da conta do casal');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'conta: o UPDATE combinado usuario_id+visibilidade e recusado');
+  end;
+
+  begin
+    update public.cartoes
+       set usuario_id = b_id, visibilidade = 'privado'
+     where id = cartao_casal;
+    perform pg_temp.assert(false, 'B nao deveria se apropriar do cartao do casal');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'cartao: o UPDATE combinado e recusado');
+  end;
+
+  begin
+    update public.lancamentos
+       set usuario_id = b_id, visibilidade = 'privado'
+     where id = lanc_casal;
+    perform pg_temp.assert(false, 'B nao deveria se apropriar do lancamento do casal');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'lancamento: o UPDATE combinado e recusado');
+  end;
+
+  -- tirar da esfera compartilhada, sozinho, continua barrado pelo WITH CHECK
+  begin
+    update public.contas set visibilidade = 'privado' where id = conta_casal;
+    perform pg_temp.assert(false, 'B nao deveria tirar a conta da esfera casal');
+  exception when insufficient_privilege or check_violation then
+    perform pg_temp.assert(true, 'conta: B nao consegue tirar a linha da esfera casal');
+  end;
+
+  -- ================================= estado final, conferido como A
+  perform set_config('request.jwt.claims', como_a, true);
+
+  select usuario_id, visibilidade into dono, vis from public.contas where id = conta_casal;
+  perform pg_temp.assert(dono = a_id and vis = 'casal',
+    'ESTADO FINAL conta: continua de A e continua casal');
+
+  select usuario_id, visibilidade into dono, vis from public.cartoes where id = cartao_casal;
+  perform pg_temp.assert(dono = a_id and vis = 'casal',
+    'ESTADO FINAL cartao: continua de A e continua casal');
+
+  select usuario_id, visibilidade into dono, vis from public.lancamentos where id = lanc_casal;
+  perform pg_temp.assert(dono = a_id and vis = 'casal',
+    'ESTADO FINAL lancamento: continua de A e continua casal');
+
+  -- ==================== nem o proprio dono muda a posse por UPDATE
+  begin
+    update public.contas set usuario_id = b_id where id = conta_casal;
+    perform pg_temp.assert(false, 'A nao deveria transferir a propria conta por UPDATE');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'nem o dono muda usuario_id por UPDATE');
+  end;
+
+  select usuario_id into dono from public.contas where id = conta_casal;
+  perform pg_temp.assert(dono = a_id, 'ESTADO FINAL: a conta continua de A depois da tentativa');
+
+  -- ============================ colunas fechadas em public.usuarios
+  begin
+    update public.usuarios set email = 'sequestrado@teste.local' where id = a_id;
+    perform pg_temp.assert(false, 'o cliente nao deveria alterar o proprio email');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'usuarios.email nao e editavel pelo cliente');
+  end;
+
+  begin
+    update public.usuarios set parceiro_id = null where id = a_id;
+    perform pg_temp.assert(false, 'o cliente nao deveria mexer em parceiro_id direto');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'usuarios.parceiro_id so muda pelas RPCs');
+  end;
+
+  select email, parceiro_id into txt, parceiro from public.usuarios where id = a_id;
+  perform pg_temp.assert(txt = 'a@teste.local' and parceiro = b_id,
+    'ESTADO FINAL usuarios: email e vinculo intactos');
+
+  begin
+    update public.contas set atualizado_em = timestamptz '2000-01-01' where id = conta_casal;
+    perform pg_temp.assert(false, 'o cliente nao deveria forjar atualizado_em');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'atualizado_em nao e concedida ao cliente');
+  end;
+
+  -- ==================================== o que DEVE continuar funcionando
+  update public.contas set nome = 'Conjunta renomeada' where id = conta_casal;
+  select nome, usuario_id into txt, dono from public.contas where id = conta_casal;
+  perform pg_temp.assert(txt = 'Conjunta renomeada' and dono = a_id,
+    'o dono edita campo funcional, e a posse nao muda');
+
+  -- o gatilho continua carimbando, mesmo sem a coluna concedida
+  update public.contas set nome = 'Carimbo tocado' where id = conta_carimbo;
+  select atualizado_em into carimbo from public.contas where id = conta_carimbo;
+  perform pg_temp.assert(carimbo > timestamptz '2001-01-01',
+    'trg_atualizado_em ainda carimba (era 2000-01-01 antes do UPDATE)');
+
+  perform set_config('request.jwt.claims', como_b, true);
+  update public.contas set saldo_atual = 2500 where id = conta_casal;
+  select saldo_atual, usuario_id, visibilidade into saldo, dono, vis
+    from public.contas where id = conta_casal;
+  perform pg_temp.assert(saldo = 2500 and dono = a_id and vis = 'casal',
+    'o parceiro edita campo funcional da linha casal, sem tocar posse nem esfera');
+
+  -- =========================== as RPCs de vinculo seguem funcionando
+  perform set_config('request.jwt.claims', como_a, true);
+
+  perform public.desvincular_parceiro();
+  select parceiro_id into parceiro from public.usuarios where id = a_id;
+  perform pg_temp.assert(parceiro is null, 'desvincular_parceiro() ainda desfaz o vinculo');
+
+  perform public.vincular_parceiro('b@teste.local');
+  select parceiro_id into parceiro from public.usuarios where id = a_id;
+  perform pg_temp.assert(parceiro = b_id, 'vincular_parceiro() ainda refaz o vinculo');
 end $$;
 
 reset role;

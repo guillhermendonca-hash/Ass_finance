@@ -3,7 +3,7 @@
 ## Aplicar as migrações
 
 Pelo painel: **SQL Editor → New query**, cole e rode cada arquivo de
-`migrations/` **na ordem numérica** (0001 → 0005).
+`migrations/` **na ordem numérica** (0001 → 0006).
 
 Pela CLI:
 
@@ -21,6 +21,7 @@ supabase db push
 | `0003_rls.sql` | **Row Level Security — as três esferas de privacidade** |
 | `0004_api_privacidade.sql` | Agregados do parceiro (somar sem vazar o item) e vínculo de casal |
 | `0005_novo_usuario.sql` | Cria `usuarios` e semeia categorias no cadastro |
+| `0006_restringe_colunas_editaveis.sql` | **Privilégio de `UPDATE` por coluna**: a linha não muda de dono pelo cliente |
 
 ## As três esferas, em uma frase cada
 
@@ -37,9 +38,37 @@ supabase db push
 psql "$DATABASE_URL" -f tests/rls_test.sql
 ```
 
-O script cria dois usuários fictícios, vincula os dois, e falha com erro se
-qualquer uma das fronteiras vazar. Ele roda dentro de uma transação e dá
-`rollback` no fim — não deixa resíduo no banco.
+O script cria três usuários fictícios (dois vinculados, um com vínculo
+unilateral) e falha com erro se qualquer fronteira vazar. Roda dentro de uma
+transação e dá `rollback` no fim — não deixa resíduo no banco. São 45
+asserções, e cada ataque confere também o **estado final da linha**: capturar
+a exceção não basta.
+
+Para escolher onde o cluster descartável é criado:
+
+```bash
+PGTEST_DIR=$(mktemp -d) ./supabase/tests/run_local.sh
+```
+
+## Posse da linha
+
+RLS decide quais **linhas** o cliente alcança; ela não decide quais
+**colunas**. As policies de `UPDATE` avaliam o `USING` na linha antiga e o
+`WITH CHECK` na linha nova, então um parceiro com acesso a uma linha `casal`
+podia executar `set usuario_id = <ele>, visibilidade = 'privado'` e passar nos
+dois: o `USING` via a linha antiga (casal, de um parceiro recíproco) e o
+`WITH CHECK` via a linha nova (dele).
+
+A migração `0006` fecha isso com privilégio por coluna: `revoke update` da
+tabela inteira e `grant update (colunas funcionais)`. `usuario_id`, `id`,
+`criado_em` e `atualizado_em` deixam de ser endereçáveis em qualquer `UPDATE`
+do cliente, e `usuarios.email`/`usuarios.parceiro_id` também — o vínculo
+continua sendo responsabilidade das RPCs `SECURITY DEFINER`.
+
+Há ainda um gatilho `trg_congela_identidade` como defesa em profundidade, para
+o caso de uma migração futura reconceder `UPDATE` amplo por engano. Ele só
+barra o que vem direto do cliente: dentro de uma função `SECURITY DEFINER` o
+`current_user` é o dono da função, então caminhos privilegiados seguem livres.
 
 ## Nota honesta sobre o agregado
 
