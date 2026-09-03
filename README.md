@@ -7,8 +7,9 @@ início do iPhone.
 > Quanto posso gastar sem furar o plano, quando saio das dívidas e quanto
 > consigo guardar.
 
-**Estado:** Fase 1, etapas 1 e 2 concluídas — projeto, PWA, Supabase e o banco
-com RLS. Cadastro, lançamento e dashboard são as próximas etapas.
+**Estado:** Fase 1 completa — projeto, PWA, Supabase, banco com RLS, cadastro
+de contas/cartões/categorias, lançamento e o dashboard com 50/30/20. A Fase 2
+(dívidas, projeção, relatórios, motor de recomendação) ainda não começou.
 
 ## Rodar
 
@@ -26,6 +27,7 @@ Sem o `.env` o app sobe assim mesmo e mostra na tela o que falta configurar.
 | `npm run build` | Build de produção + service worker |
 | `npm run preview` | Serve o build localmente |
 | `npm run lint` | ESLint |
+| `npm test` | Testes da lógica pura (50/30/20, fatura, leitura de valores) |
 | `./supabase/tests/run_local.sh` | Sobe um Postgres descartável, aplica as migrações e **testa o RLS** |
 
 ## Banco
@@ -73,11 +75,27 @@ supabase/
   tests/                  teste das fronteiras + Postgres descartável
 ```
 
-## Próximas etapas (Fase 1)
+## O que as telas fazem hoje
 
-3. Cadastro de contas, cartões e categorias personalizadas
-4. Lançar receitas/gastos com classe, categoria, vínculo e visibilidade
-5. Dashboard Resumo com 50/30/20 e sobra do mês
+- **Resumo** — saldo em contas, sobra do mês, diagnóstico 50/30/20 com a meta
+  marcada em cada barra, e a fatura aberta de cada cartão com a barra de limite
+  (vermelha acima de 80%).
+- **Lançar** — gasto ou recebimento com valor, classe, categoria, vínculo a
+  conta ou cartão, data, visibilidade e descrição. Escolher a categoria já
+  ajusta a classe. Lista dos últimos lançamentos, com excluir.
+- **Carteira** — contas (saldo, visibilidade) e cartões (limite, fechamento,
+  vencimento, fatura do ciclo aberto).
+- **Ajustes** — nome, renda fixa mensal e as categorias personalizadas.
+- **Dívidas** — Fase 2.
 
-Fases 2 e 3 (dívidas, projeção, relatórios, motor de recomendação, visão do
-casal, realtime) seguem a especificação.
+O saldo da conta é ajustado pelo banco, não pelo app: um gatilho em
+`lancamentos` move `contas.saldo_atual` a cada inserção, edição e exclusão.
+
+## Próximas etapas (Fase 2)
+
+6. Módulo de dívidas (rotativa + parcelamento), ordem de ataque, projeção
+7. Calendário de parcelas futuras
+8. Reserva de emergência em duas fases
+9. Orçamentos por categoria com os três alertas
+10. Relatórios (pizza, comparativo 6 meses, evolução da dívida)
+11. Motor de recomendação ativa

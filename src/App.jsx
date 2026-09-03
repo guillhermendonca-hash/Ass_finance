@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
+import { DadosProvider } from './context/DadosContext'
 import { useAuth } from './context/useAuth'
 import { supabaseConfigurado } from './lib/supabase'
 import ConfigNecessaria from './components/ConfigNecessaria'
@@ -18,16 +19,18 @@ function Rotas() {
   if (!sessao) return <Login />
 
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route index element={<Resumo />} />
-        <Route path="lancar" element={<Lancar />} />
-        <Route path="carteira" element={<Carteira />} />
-        <Route path="dividas" element={<Dividas />} />
-        <Route path="ajustes" element={<Ajustes />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <DadosProvider>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<Resumo />} />
+          <Route path="lancar" element={<Lancar />} />
+          <Route path="carteira" element={<Carteira />} />
+          <Route path="dividas" element={<Dividas />} />
+          <Route path="ajustes" element={<Ajustes />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </DadosProvider>
   )
 }
 

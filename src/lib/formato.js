@@ -11,13 +11,15 @@ export const dataCurta = (iso) =>
     month: 'short',
   })
 
-/** Primeiro e último dia do mês de referência, no formato aceito pelo Postgres. */
-export function intervaloDoMes(referencia = new Date()) {
-  const ano = referencia.getFullYear()
-  const mes = referencia.getMonth()
-  const iso = (d) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-      d.getDate(),
-    ).padStart(2, '0')}`
-  return { inicio: iso(new Date(ano, mes, 1)), fim: iso(new Date(ano, mes + 1, 0)) }
+
+/**
+ * Lê valor digitado em português: "1.234,56" e "1234.56" viram 1234.56.
+ * A vírgula decide: com ela, o ponto é separador de milhar.
+ */
+export function paraNumero(texto) {
+  const t = String(texto ?? '').trim()
+  if (!t) return 0
+  const normalizado = t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t
+  const n = Number(normalizado)
+  return Number.isFinite(n) ? n : 0
 }
