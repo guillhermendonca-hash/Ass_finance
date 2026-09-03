@@ -1,0 +1,323 @@
+/* ---------------------------------------------------------------
+   Identidade visual (secao 9): Playfair Display nos numeros e
+   titulos, bordeaux como cor principal, fundo off-white quente.
+   Layout mobile-first com navegacao inferior fixa.
+   --------------------------------------------------------------- */
+
+:root {
+  --bordeaux: #7b1d2e;
+  --bordeaux-escuro: #5d1522;
+  --bordeaux-claro: #9a3d4c;
+  --ambar: #b5741a;
+  --verde: #2f6b4f;
+  --vermelho: #c0392b;
+
+  --fundo: #fbf7f4;
+  --superficie: #ffffff;
+  --borda: #ece3dc;
+  --texto: #2c2320;
+  --texto-suave: #6f625b;
+  --texto-fraco: #9c8d85;
+
+  --raio: 14px;
+  --raio-g: 20px;
+  --sombra: 0 1px 2px rgba(44, 35, 32, 0.04), 0 8px 24px rgba(44, 35, 32, 0.06);
+
+  --serif: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+
+  --nav-altura: 62px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--fundo);
+  color: var(--texto);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  /* impede o "bounce" do Safari quando instalado na tela de inicio */
+  overscroll-behavior-y: none;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 16px; /* < 16px faz o iOS dar zoom ao focar */
+  color: inherit;
+}
+
+/* ------------------------------------------------------ estrutura */
+
+.app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.conteudo {
+  flex: 1;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 20px 18px calc(var(--nav-altura) + var(--safe-bottom) + 28px);
+}
+
+.cabecalho {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.cabecalho h1 {
+  font-size: 26px;
+}
+
+.cabecalho .subtitulo {
+  color: var(--texto-suave);
+  font-size: 13px;
+}
+
+/* --------------------------------------------------------- cartao */
+
+.cartao {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-g);
+  padding: 18px;
+  box-shadow: var(--sombra);
+}
+
+.cartao + .cartao {
+  margin-top: 14px;
+}
+
+.cartao__rotulo {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--texto-fraco);
+  margin-bottom: 6px;
+}
+
+.cartao__valor {
+  font-family: var(--serif);
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.valor--positivo { color: var(--verde); }
+.valor--negativo { color: var(--vermelho); }
+.valor--alerta   { color: var(--ambar); }
+
+/* ---------------------------------------------------- navegacao */
+
+.nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: saturate(180%) blur(12px);
+  border-top: 1px solid var(--borda);
+  padding-bottom: var(--safe-bottom);
+}
+
+.nav a {
+  flex: 1;
+  height: var(--nav-altura);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  text-decoration: none;
+  color: var(--texto-fraco);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  transition: color 0.15s ease;
+}
+
+.nav a.ativo {
+  color: var(--bordeaux);
+  font-weight: 600;
+}
+
+.nav__icone {
+  font-size: 19px;
+  line-height: 1;
+}
+
+/* ----------------------------------------------------- formulario */
+
+.campo {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.campo__rotulo {
+  display: block;
+  font-size: 13px;
+  color: var(--texto-suave);
+  margin-bottom: 6px;
+}
+
+.campo input,
+.campo select,
+.campo textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  background: var(--superficie);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.campo input:focus,
+.campo select:focus,
+.campo textarea:focus {
+  border-color: var(--bordeaux-claro);
+  box-shadow: 0 0 0 3px rgba(123, 29, 46, 0.1);
+}
+
+.botao {
+  width: 100%;
+  padding: 14px 18px;
+  border: none;
+  border-radius: var(--raio);
+  background: var(--bordeaux);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.botao:hover:not(:disabled) { background: var(--bordeaux-escuro); }
+.botao:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.botao--texto {
+  background: none;
+  color: var(--bordeaux);
+  font-weight: 500;
+  padding: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.botao--texto:hover:not(:disabled) { background: none; color: var(--bordeaux-escuro); }
+
+/* --------------------------------------------------------- avisos */
+
+.aviso {
+  border-radius: var(--raio);
+  padding: 12px 14px;
+  font-size: 14px;
+  margin-bottom: 14px;
+  border: 1px solid;
+}
+
+.aviso--erro    { background: #fdf1ef; border-color: #f0cfc9; color: #8e2b1f; }
+.aviso--sucesso { background: #eef5f1; border-color: #cfe2d7; color: #1f4d38; }
+.aviso--info    { background: #fbf4ea; border-color: #ecdcc4; color: #6f4a12; }
+
+/* ------------------------------------------------- tela de entrada */
+
+.entrada {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 28px 22px;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.entrada__marca {
+  font-family: var(--serif);
+  font-size: 30px;
+  color: var(--bordeaux);
+  line-height: 1.2;
+  margin-bottom: 8px;
+}
+
+.entrada__frase {
+  color: var(--texto-suave);
+  font-size: 14px;
+  margin-bottom: 26px;
+}
+
+.rodape-nota {
+  margin-top: 22px;
+  font-size: 12px;
+  color: var(--texto-fraco);
+  text-align: center;
+}
+
+/* ------------------------------------------------------ utilidades */
+
+.vazio {
+  text-align: center;
+  color: var(--texto-suave);
+  padding: 34px 18px;
+}
+
+.vazio__titulo {
+  font-family: var(--serif);
+  font-size: 19px;
+  color: var(--texto);
+  margin-bottom: 6px;
+}
+
+.carregando {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  color: var(--texto-suave);
+  font-size: 14px;
+}
+
+.lista-checagem {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--texto-suave);
+  line-height: 1.7;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  background: #f3ece7;
+  border-radius: 5px;
+  padding: 2px 5px;
+}
