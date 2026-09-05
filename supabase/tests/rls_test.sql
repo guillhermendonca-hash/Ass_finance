@@ -39,12 +39,41 @@ select '00000000-0000-0000-0000-000000000000', i.id, 'authenticated', 'authentic
        jsonb_build_object('nome', 'Usuario ' || i.rotulo)
 from ids i;
 
--- Vinculo reciproco entre A e B. C aponta para A, mas A nao aponta de
--- volta: e o caso do vinculo unilateral, que nao pode valer nada.
-update public.usuarios set parceiro_id = (select id from ids where rotulo = 'B')
-  where id = (select id from ids where rotulo = 'A');
-update public.usuarios set parceiro_id = (select id from ids where rotulo = 'A')
-  where id = (select id from ids where rotulo = 'B');
+-- CAMINHO FELIZ pelas RPCs reais, nunca por UPDATE privilegiado: A declara,
+-- B confirma, e e a confirmacao que funde os dois households individuais.
+do $$
+declare
+  a_id constant uuid := '11111111-1111-4111-8111-111111111111';
+  b_id constant uuid := '22222222-2222-4222-8222-222222222222';
+  h_antes_a uuid; h_antes_b uuid;
+begin
+  select household_id into h_antes_a from public.household_members where usuario_id = a_id;
+  select household_id into h_antes_b from public.household_members where usuario_id = b_id;
+  perform pg_temp.assert(h_antes_a <> h_antes_b,
+    'antes de qualquer vinculo, A e B estao em households individuais distintos');
+
+  -- primeira declaracao: registra a solicitacao e nao compartilha nada
+  perform set_config('request.jwt.claims',
+    format('{"sub":"%s","role":"authenticated"}', a_id), true);
+  perform public.vincular_parceiro('b@teste.local');
+  perform pg_temp.assert(not app.sao_parceiros(a_id, b_id),
+    'primeira declaracao A->B nao concede acesso: ainda nao ha household comum');
+  perform pg_temp.assert(
+    (select household_id from public.household_members where usuario_id = a_id) = h_antes_a
+    and (select household_id from public.household_members where usuario_id = b_id) = h_antes_b,
+    'primeira declaracao nao move membresia nenhuma');
+
+  -- confirmacao: aqui sim funde
+  perform set_config('request.jwt.claims',
+    format('{"sub":"%s","role":"authenticated"}', b_id), true);
+  perform public.vincular_parceiro('a@teste.local');
+  perform pg_temp.assert(app.sao_parceiros(a_id, b_id),
+    'a confirmacao B->A funde os dois em um household');
+end $$;
+
+-- FIXTURE ADVERSARIAL, e so isso: fabricamos um ponteiro unilateral de C
+-- para A por UPDATE privilegiado, justamente para provar que um ponteiro
+-- solto nao concede acesso nenhum depois do cutover.
 update public.usuarios set parceiro_id = (select id from ids where rotulo = 'A')
   where id = (select id from ids where rotulo = 'C');
 
@@ -546,13 +575,14 @@ begin
   perform pg_temp.assert(n = 0,
     'as categorias do provisionamento ja nascem com o household derivado');
 
-  -- A divergencia esperada da B1, registrada como asserção para nao passar
-  -- despercebida no cutover da B2.
+  -- Na B1 isto era uma divergencia registrada: o vinculo criado depois da
+  -- 0008 deixava A e B em households separados. Depois do cutover da 0009
+  -- a RPC move a membresia junto, entao a sombra deixou de existir como
+  -- sombra — ela E a autoridade.
   perform pg_temp.assert(
     (select household_id from public.household_members where usuario_id = a_id)
-    <> (select household_id from public.household_members where usuario_id = b_id),
-    'SOMBRA: A e B sao parceiros reciprocos mas seguem em households separados '
-    '(vinculo criado depois da 0008; a B2 reconcilia)');
+    = (select household_id from public.household_members where usuario_id = b_id),
+    'A e B, vinculados pela RPC, dividem o mesmo household');
 end $$;
 
 -- ------------------------------------- derivacao nos quatro tipos
@@ -759,6 +789,312 @@ begin
 end $$;
 
 set local role authenticated;
+
+-- =====================================================================
+-- TAR-002B2 — Vinculo e desvinculo pelas RPCs, e o que nao pode acontecer
+--
+-- Tres usuarios novos, para nao perturbar as fronteiras ja verificadas
+-- com A, B e C. G e H formam e desfazem um casal; I e o terceiro que
+-- tenta se meter.
+-- =====================================================================
+reset role;
+
+insert into auth.users (instance_id, id, aud, role, email, encrypted_password,
+                        email_confirmed_at, created_at, updated_at,
+                        raw_app_meta_data, raw_user_meta_data)
+values
+  ('00000000-0000-0000-0000-000000000000', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+   'authenticated', 'authenticated', 'g@teste.local', '', now(), now(), now(),
+   '{}'::jsonb, '{"nome":"Usuario G"}'::jsonb),
+  ('00000000-0000-0000-0000-000000000000', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+   'authenticated', 'authenticated', 'h@teste.local', '', now(), now(), now(),
+   '{}'::jsonb, '{"nome":"Usuario H"}'::jsonb),
+  ('00000000-0000-0000-0000-000000000000', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+   'authenticated', 'authenticated', 'i@teste.local', '', now(), now(), now(),
+   '{}'::jsonb, '{"nome":"Usuario I"}'::jsonb);
+
+insert into public.contas (id, usuario_id, nome, saldo_atual, visibilidade) values
+  ('9a000000-0000-4000-8000-000000000001', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Conta de G', 500, 'casal'),
+  ('9b000000-0000-4000-8000-000000000002', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Conta de H', 700, 'casal');
+
+do $$
+declare
+  g_id constant uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  h_id constant uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  i_id constant uuid := 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  h_g uuid; h_h uuid; h_i uuid; n bigint; ptr uuid;
+  membresias_antes jsonb; contas_antes jsonb;
+begin
+  raise notice 'TAR-002B2 — vinculo e desvinculo pelas RPCs:';
+
+  select household_id into h_g from public.household_members where usuario_id = g_id;
+  select household_id into h_h from public.household_members where usuario_id = h_id;
+  select household_id into h_i from public.household_members where usuario_id = i_id;
+  perform pg_temp.assert(h_g <> h_h and h_g <> h_i and h_h <> h_i,
+    'G, H e I nascem em households individuais distintos');
+
+  -- ============================ falha deliberada no meio do MERGE
+  -- O merge termina apagando o household absorvido. Um gatilho que
+  -- derruba esse DELETE quebra a RPC DEPOIS de ela ja ter movido
+  -- membresia e entidades — o pior momento possivel.
+  create or replace function pg_temp.falha_no_merge() returns trigger
+    language plpgsql as $f$ begin raise exception 'FALHA_MERGE'; end $f$;
+  execute 'create trigger trg_falha_merge before delete on public.households
+             for each row execute function pg_temp.falha_no_merge()';
+
+  select jsonb_agg(jsonb_build_array(usuario_id, household_id, posicao) order by usuario_id)
+    into membresias_antes from public.household_members;
+  select jsonb_agg(jsonb_build_array(id, usuario_id, household_id) order by id)
+    into contas_antes from public.contas;
+
+  perform set_config('request.jwt.claims', format('{"sub":"%s","role":"authenticated"}', g_id), true);
+  perform public.vincular_parceiro('h@teste.local');   -- primeira declaracao, nao funde
+
+  perform set_config('request.jwt.claims', format('{"sub":"%s","role":"authenticated"}', h_id), true);
+  begin
+    perform public.vincular_parceiro('g@teste.local'); -- confirmacao: deveria fundir e falhar
+    perform pg_temp.assert(false, 'o merge deveria ter falhado pelo gatilho injetado');
+  exception when others then
+    perform pg_temp.assert(sqlerrm like '%FALHA_MERGE%',
+      'merge derrubado pela falha injetada (' || sqlerrm || ')');
+  end;
+
+  select parceiro_id into ptr from public.usuarios where id = h_id;
+  perform pg_temp.assert(ptr is null,
+    'MERGE REVERTIDO: o ponteiro de H nao ficou gravado');
+  perform pg_temp.assert(
+    membresias_antes = (select jsonb_agg(jsonb_build_array(usuario_id, household_id, posicao) order by usuario_id)
+                          from public.household_members),
+    'MERGE REVERTIDO: nenhuma membresia mudou');
+  perform pg_temp.assert(
+    contas_antes = (select jsonb_agg(jsonb_build_array(id, usuario_id, household_id) order by id)
+                      from public.contas),
+    'MERGE REVERTIDO: nenhuma conta mudou de household');
+
+  execute 'drop trigger trg_falha_merge on public.households';
+
+  -- ============================ merge de verdade
+  perform public.vincular_parceiro('g@teste.local');
+  select household_id into h_g from public.household_members where usuario_id = g_id;
+  select household_id into h_h from public.household_members where usuario_id = h_id;
+  perform pg_temp.assert(h_g = h_h, 'G e H foram unidos pela confirmacao');
+
+  select count(*) into n from public.household_members where household_id = h_g;
+  perform pg_temp.assert(n = 2, 'o household resultante tem exatamente dois membros');
+  select count(distinct posicao) into n from public.household_members where household_id = h_g;
+  perform pg_temp.assert(n = 2, 'os dois ocupam posicoes diferentes');
+
+  select count(*) into n from public.contas
+   where usuario_id in (g_id, h_id) and household_id is distinct from h_g;
+  perform pg_temp.assert(n = 0, 'as contas de G e de H foram para o household do casal');
+
+  select count(*) into n from public.households
+   where not exists (select 1 from public.household_members hm where hm.household_id = households.id);
+  perform pg_temp.assert(n = 0, 'o merge nao deixou household orfao');
+
+  -- ============================ o terceiro nao entra
+  perform set_config('request.jwt.claims', format('{"sub":"%s","role":"authenticated"}', i_id), true);
+  select jsonb_agg(jsonb_build_array(usuario_id, household_id, posicao) order by usuario_id)
+    into membresias_antes from public.household_members;
+  begin
+    perform public.vincular_parceiro('g@teste.local');
+    perform pg_temp.assert(false, 'I nao deveria entrar num household cheio');
+  exception when sqlstate '22023' then
+    perform pg_temp.assert(true, 'I e recusado: G ja divide household com outra pessoa');
+  end;
+  perform pg_temp.assert(
+    membresias_antes = (select jsonb_agg(jsonb_build_array(usuario_id, household_id, posicao) order by usuario_id)
+                          from public.household_members),
+    'ESTADO FINAL: a tentativa do terceiro nao mexeu em membresia nenhuma');
+  perform pg_temp.assert((select parceiro_id from public.usuarios where id = i_id) is null,
+    'ESTADO FINAL: nem o ponteiro de I foi gravado');
+
+  -- ============================ o ator ocupado tambem e recusado
+  perform set_config('request.jwt.claims', format('{"sub":"%s","role":"authenticated"}', g_id), true);
+  begin
+    perform public.vincular_parceiro('i@teste.local');
+    perform pg_temp.assert(false, 'G, ja em household de dois, nao deveria vincular com I');
+  exception when sqlstate '22023' then
+    perform pg_temp.assert(true, 'G e recusado: ja declarou vinculo com outra pessoa');
+  end;
+  perform pg_temp.assert((select parceiro_id from public.usuarios where id = g_id) = h_id,
+    'ESTADO FINAL: o ponteiro de G continua apontando para H');
+end $$;
+
+-- ---------------------- H enxerga o detalhe da linha casal de G
+set local role authenticated;
+set local request.jwt.claims to '{"sub":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"authenticated"}';
+
+do $$
+declare n bigint;
+begin
+  select count(*) into n from public.contas
+   where usuario_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  perform pg_temp.assert(n = 1, 'H ve a conta casal de G enquanto dividem household');
+end $$;
+
+-- ============================ falha deliberada no meio do SPLIT
+reset role;
+
+do $$
+declare
+  g_id constant uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  h_id constant uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  h_casal uuid; n bigint;
+  membresias_antes jsonb; contas_antes jsonb;
+begin
+  select household_id into h_casal from public.household_members where usuario_id = g_id;
+
+  -- O split termina limpando o parceiro_id do chamador. Um gatilho que
+  -- derruba exatamente esse UPDATE quebra a RPC depois de ela ja ter
+  -- criado o household novo e movido membresia e entidades.
+  create or replace function pg_temp.falha_no_split() returns trigger
+    language plpgsql as $f$
+    begin
+      if new.parceiro_id is null and old.parceiro_id is not null then
+        raise exception 'FALHA_SPLIT';
+      end if;
+      return new;
+    end $f$;
+  execute 'create trigger trg_falha_split before update on public.usuarios
+             for each row execute function pg_temp.falha_no_split()';
+
+  select jsonb_agg(jsonb_build_array(usuario_id, household_id, posicao) order by usuario_id)
+    into membresias_antes from public.household_members;
+  select jsonb_agg(jsonb_build_array(id, usuario_id, household_id) order by id)
+    into contas_antes from public.contas;
+
+  perform set_config('request.jwt.claims', format('{"sub":"%s","role":"authenticated"}', g_id), true);
+  begin
+    perform public.desvincular_parceiro();
+    perform pg_temp.assert(false, 'o split deveria ter falhado pelo gatilho injetado');
+  exception when others then
+    perform pg_temp.assert(sqlerrm like '%FALHA_SPLIT%',
+      'split derrubado pela falha injetada (' || sqlerrm || ')');
+  end;
+
+  perform pg_temp.assert(
+    membresias_antes = (select jsonb_agg(jsonb_build_array(usuario_id, household_id, posicao) order by usuario_id)
+                          from public.household_members),
+    'SPLIT REVERTIDO: nenhuma membresia mudou');
+  perform pg_temp.assert(
+    contas_antes = (select jsonb_agg(jsonb_build_array(id, usuario_id, household_id) order by id)
+                      from public.contas),
+    'SPLIT REVERTIDO: nenhuma conta mudou de household');
+  perform pg_temp.assert(app.sao_parceiros(g_id, h_id),
+    'SPLIT REVERTIDO: G e H continuam no mesmo household');
+
+  execute 'drop trigger trg_falha_split on public.usuarios';
+
+  -- ============================ split de verdade
+  perform public.desvincular_parceiro();
+
+  perform pg_temp.assert(not app.sao_parceiros(g_id, h_id),
+    'depois do desvinculo, G e H deixam de ser parceiros na hora');
+  perform pg_temp.assert((select parceiro_id from public.usuarios where id = g_id) is null,
+    'o ponteiro do chamador foi limpo');
+  perform pg_temp.assert((select parceiro_id from public.usuarios where id = h_id) = g_id,
+    'o ponteiro do OUTRO sobra apontando para G — e nao pode valer nada');
+
+  select count(*) into n from public.household_members
+   where household_id = (select household_id from public.household_members where usuario_id = g_id);
+  perform pg_temp.assert(n = 1, 'G saiu para um household individual');
+  select count(*) into n from public.household_members
+   where household_id = (select household_id from public.household_members where usuario_id = h_id);
+  perform pg_temp.assert(n = 1, 'H ficou sozinho no household que era do casal');
+
+  -- so as linhas do chamador se mexeram
+  perform pg_temp.assert(
+    (select household_id from public.contas where usuario_id = g_id)
+      = (select household_id from public.household_members where usuario_id = g_id),
+    'a conta de G acompanhou G');
+  perform pg_temp.assert(
+    (select household_id from public.contas where usuario_id = h_id)
+      = (select household_id from public.household_members where usuario_id = h_id),
+    'a conta de H ficou com H');
+  select count(*) into n from public.contas where usuario_id in (g_id, h_id);
+  perform pg_temp.assert(n = 2, 'nenhuma linha foi apagada no desvinculo');
+  select count(*) into n from public.contas
+   where id = '9a000000-0000-4000-8000-000000000001' and usuario_id = g_id;
+  perform pg_temp.assert(n = 1, 'nenhum usuario_id mudou de dono');
+end $$;
+
+-- ---------------------- H perde o detalhe na hora
+set local role authenticated;
+set local request.jwt.claims to '{"sub":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"authenticated"}';
+
+do $$
+declare n bigint;
+begin
+  select count(*) into n from public.contas
+   where usuario_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  perform pg_temp.assert(n = 0,
+    'H deixa de ver a conta casal de G, mesmo com o ponteiro obsoleto apontando para ele');
+
+  select count(*) into n from public.resumo_do_parceiro();
+  perform pg_temp.assert(n = 0,
+    'o agregado de H fica vazio: ponteiro solto nao recria parceria');
+end $$;
+
+-- ============================ relink reciproco
+reset role;
+
+do $$
+declare
+  g_id constant uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  h_id constant uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  n bigint;
+begin
+  perform set_config('request.jwt.claims', format('{"sub":"%s","role":"authenticated"}', g_id), true);
+  -- H ainda aponta para G, entao esta declaracao ja e a confirmacao
+  perform public.vincular_parceiro('h@teste.local');
+
+  perform pg_temp.assert(app.sao_parceiros(g_id, h_id), 'o relink reciproco volta a unir os dois');
+  select count(*) into n from public.household_members
+   where household_id = (select household_id from public.household_members where usuario_id = g_id);
+  perform pg_temp.assert(n = 2, 'o household reunido tem dois membros');
+
+  select count(*) into n from public.households
+   where not exists (select 1 from public.household_members hm where hm.household_id = households.id);
+  perform pg_temp.assert(n = 0, 'o relink nao deixou household orfao');
+
+  select count(*) into n from public.contas
+   where usuario_id in (g_id, h_id)
+     and household_id is distinct from (select household_id from public.household_members where usuario_id = g_id);
+  perform pg_temp.assert(n = 0, 'as contas dos dois voltaram para o household comum');
+end $$;
+
+-- ============================ allowlist de parceiro_id
+do $$
+declare n bigint;
+begin
+  raise notice 'Allowlist de parceiro_id:';
+
+  select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+   where ns.nspname = 'app'
+     and p.proname in ('sao_parceiros', 'parceiro_atual', 'valida_vinculos_lancamento',
+                       'household_de', 'deriva_household')
+     and pg_get_functiondef(p.oid) like '%parceiro_id%';
+  perform pg_temp.assert(n = 0, 'nenhum helper de autorizacao menciona parceiro_id');
+
+  select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+   where ns.nspname = 'public'
+     and p.proname in ('resumo_do_parceiro', 'saldos_agregados_do_parceiro')
+     and pg_get_functiondef(p.oid) like '%parceiro_id%';
+  perform pg_temp.assert(n = 0, 'nenhuma funcao agregadora menciona parceiro_id');
+
+  select count(*) into n from pg_policies
+   where schemaname = 'public'
+     and (coalesce(qual, '') like '%parceiro_id%' or coalesce(with_check, '') like '%parceiro_id%');
+  perform pg_temp.assert(n = 0, 'nenhuma policy menciona parceiro_id');
+
+  select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+   where ns.nspname = 'public'
+     and p.proname in ('meu_parceiro', 'vincular_parceiro', 'desvincular_parceiro')
+     and pg_get_functiondef(p.oid) like '%parceiro_id%';
+  perform pg_temp.assert(n = 3,
+    'as tres RPCs seguem usando parceiro_id como estado de solicitacao');
+end $$;
 
 reset role;
 

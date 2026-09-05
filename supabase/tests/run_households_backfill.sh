@@ -155,3 +155,17 @@ rodar_migracao "$MIG_0008"
 
 echo "→ verificacao do backfill"
 rodar_sql "$RAIZ/supabase/tests/households_backfill_test.sql"
+
+# ------------------------------------------------- cutover (B2)
+# A B1 fotografou parceiro_id quando rodou. Aqui mexemos no vinculo DEPOIS
+# dela, para que a 0009 tenha mesmo o que reconciliar — nos dois sentidos:
+# um par junto que precisa ser separado e dois separados que precisam ser
+# unidos.
+echo "→ divergencia deliberada entre a sombra da B1 e o estado corrente"
+rodar_sql "$RAIZ/supabase/tests/households_cutover_setup.sql"
+
+echo "→ 0009: reconciliacao e cutover de autorizacao"
+rodar_migracao "$RAIZ/supabase/migrations/0009_households_cutover.sql"
+
+echo "→ verificacao do cutover"
+rodar_sql "$RAIZ/supabase/tests/households_cutover_test.sql"

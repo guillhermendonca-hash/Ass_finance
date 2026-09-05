@@ -34,7 +34,7 @@ Sem o `.env` o app sobe assim mesmo e mostra na tela o que falta configurar.
 ## Banco
 
 As migrações estão em `supabase/migrations/`, para rodar em ordem (`0001` →
-`0008`). Detalhes em [`supabase/README.md`](supabase/README.md).
+`0009`). Detalhes em [`supabase/README.md`](supabase/README.md).
 
 Tabelas da Fase 1: `usuarios`, `contas`, `cartoes`, `categorias`, `lancamentos`.
 
@@ -48,11 +48,17 @@ Todo lançamento, conta e cartão nasce **privado**. O dono decide promover:
 | `total_compartilhado` | **só o agregado** | a esfera está **ausente** do `USING` de todo `SELECT`; a soma sai de `resumo_do_parceiro()`, função `SECURITY DEFINER` que devolve `sum()` por classe/categoria e nunca um item |
 | `casal` | detalhe completo, e edita | única esfera que atravessa, e só para parceiro **recíproco** |
 
-O vínculo de casal só vale quando **os dois lados se apontam**. Sem isso,
-escrever o id de alguém em `parceiro_id` não abre porta nenhuma — é o que o
-teste cobre no caso do usuário C.
+O vínculo de casal vive numa **membresia**: as duas pessoas precisam estar no
+mesmo *household*. `parceiro_id` sobrou apenas como registro da solicitação —
+escrever o id de alguém lá não abre porta nenhuma, nem mesmo se o outro lado
+apontar de volta sem que a RPC tenha rodado. É o que o teste cobre nos casos do
+usuário C e do ponteiro obsoleto.
 
-Rodando `./supabase/tests/run_local.sh`, 80 asserções verificam essas
+Declarar é uma coisa, confirmar é outra: `vincular_parceiro` grava a solicitação
+e para por aí. Só quando o outro lado confirma é que os dois *households*
+individuais se fundem e os dados passam a ser vistos.
+
+Rodando `./supabase/tests/run_local.sh`, 123 asserções verificam essas
 fronteiras contra um Postgres real (inclusive as tentativas de escrita
 indevida). Qualquer vazamento derruba o script.
 

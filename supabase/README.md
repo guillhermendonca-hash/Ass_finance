@@ -15,9 +15,10 @@ migrações do projeto e aplica cada arquivo na fronteira transacional certa; a
 execução manual não faz nem uma coisa nem outra, e deixa o histórico mentindo
 sobre o que está aplicado.
 
-> **A `0008` não pode ser implantada isoladamente.** O backfill fotografa
-> `parceiro_id` no momento em que roda; vínculos criados ou desfeitos depois
-> divergem. Não há deploy intermediário entre a fatia B1 e a B2.
+> **`0008` e `0009` são um par: implante as duas juntas, nunca só a primeira.**
+> A `0008` monta a estrutura e a preenche; a `0009` reconcilia com o estado
+> corrente e faz o corte de autoridade. Entre uma e outra o banco fica com a
+> estrutura montada mas ainda decidindo acesso pelo ponteiro antigo.
 
 ## O que cada arquivo faz
 
@@ -30,7 +31,8 @@ sobre o que está aplicado.
 | `0005_novo_usuario.sql` | Cria `usuarios` e semeia categorias no cadastro |
 | `0006_restringe_colunas_editaveis.sql` | **Privilégio de `UPDATE` por coluna**: a linha não muda de dono pelo cliente |
 | `0007_corrige_gatilho_identidade_usuario.sql` | Gatilho de identidade próprio para `usuarios`, que não tem `usuario_id` |
-| `0008_households_fundacao.sql` | **Fundação transicional de households** — sombra, ver aviso abaixo |
+| `0008_households_fundacao.sql` | Fundação de households: tabelas, backfill e derivação |
+| `0009_households_cutover.sql` | **Cutover**: household passa a ser a autoridade de acesso |
 
 ## As três esferas, em uma frase cada
 
@@ -49,7 +51,7 @@ psql "$DATABASE_URL" -f tests/rls_test.sql
 
 O script cria três usuários fictícios (dois vinculados, um com vínculo
 unilateral) e falha com erro se qualquer fronteira vazar. Roda dentro de uma
-transação e dá `rollback` no fim — não deixa resíduo no banco. São 80
+transação e dá `rollback` no fim — não deixa resíduo no banco. São 123
 asserções, e cada ataque confere também o **estado final da linha**: capturar
 a exceção não basta.
 
@@ -91,14 +93,45 @@ e verifica que o rollback não deixou resíduo nenhum — inclusive que os carim
 voltaram a existir **e a estar habilitados**. São 8 asserções.
 
 **Depois aplica a `0008` de verdade** e verifica o agrupamento: mais 23
-asserções. Total de 31.
+asserções.
+
+**Por fim exercita o cutover.** Desfaz a reciprocidade de um par que está junto,
+torna recíprocos dois que estão separados, aplica a `0009` e verifica que a
+reconciliação arrumou as duas direções sem tocar em dono, linha, `parceiro_id`
+ou carimbo de tempo: mais 30 asserções. Total de 61.
 
 Isso funciona porque cada migração roda com `psql -1`, ou seja, o arquivo
 inteiro é uma única transação. Sem isso, uma falha no meio deixaria DDL aplicada
 e gatilhos desligados. Os arquivos de teste, ao contrário, rodam sem `-1`,
 porque administram a própria transação.
 
-## Households (fundação transicional)
+## Households: quem decide o acesso
+
+Depois da `0009`, quem concede acesso compartilhado é a **membresia no
+household** — nunca `usuarios.parceiro_id`. O ponteiro continua existindo, mas
+só como registro da solicitação, para o frontend atual: um ponteiro solto, ou
+até um par de ponteiros recíprocos gravado à mão, não coloca ninguém dentro de
+um household e não abre linha nenhuma.
+
+O fluxo tem dois passos, e é proposital:
+
+1. `vincular_parceiro('email')` grava a solicitação. **Nada é compartilhado.**
+2. quando o outro lado chama a mesma função de volta, os dois *households*
+   individuais se fundem numa transação só — membresias, contas, cartões,
+   categorias e lançamentos vão juntos, e o *household* vazio é removido.
+
+`desvincular_parceiro()` faz o caminho inverso: o chamador sai para um
+*household* individual levando **apenas as próprias linhas**. Nenhum
+`usuario_id` muda, nada é apagado, e as linhas do outro membro ficam com ele. O
+acesso é revogado na hora — o ponteiro que sobrar no perfil do outro não
+restaura nada.
+
+Os helpers de autorização (`app.sao_parceiros`, `app.parceiro_atual`,
+`app.valida_vinculos_lancamento`), as policies e as funções de agregado **não
+mencionam `parceiro_id`**, e há teste de catálogo em ambos os arneses que falha
+se alguém reintroduzir a dependência.
+
+## Households (estrutura)
 
 > **Não implantar a `0008` sozinha.** O backfill fotografa `parceiro_id` no
 > momento em que a migração roda. Vínculos criados ou desfeitos depois disso
