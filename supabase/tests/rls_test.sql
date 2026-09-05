@@ -496,6 +496,270 @@ end $$;
 reset role;
 revoke update (criado_em) on public.usuarios from authenticated;
 
+-- =====================================================================
+-- TAR-002B1 — Fundacao shadow de households
+--
+-- ATENCAO a uma divergencia esperada nesta fatia: aqui as migracoes ja
+-- estao todas aplicadas quando os usuarios sao criados, entao o household
+-- de cada um vem do PROVISIONAMENTO (individual), nao do backfill. A e B
+-- sao parceiros reciprocos e mesmo assim ficam em households diferentes,
+-- porque a 0008 nao sincroniza vinculos criados depois dela. Isso e o
+-- comportamento correto da B1 e o motivo de nao haver deploy entre B1 e B2.
+-- O backfill sobre dados preexistentes e coberto pelo outro arnes,
+-- run_households_backfill.sh.
+-- =====================================================================
+reset role;
+
+insert into auth.users (instance_id, id, aud, role, email, encrypted_password,
+                        email_confirmed_at, created_at, updated_at,
+                        raw_app_meta_data, raw_user_meta_data)
+values ('00000000-0000-0000-0000-000000000000', 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        'authenticated', 'authenticated', 'f@teste.local', '', now(), now(), now(),
+        '{"provider":"email"}'::jsonb, '{"nome":"Usuario F"}'::jsonb);
+
+do $$
+declare
+  f_id constant uuid := 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  a_id constant uuid := '11111111-1111-4111-8111-111111111111';
+  b_id constant uuid := '22222222-2222-4222-8222-222222222222';
+  h_f uuid; p_f smallint; n bigint;
+begin
+  raise notice 'TAR-002B1 — fundacao de households:';
+
+  perform pg_temp.assert(
+    exists (select 1 from public.usuarios where id = f_id),
+    'novo auth.users gera a linha em public.usuarios');
+
+  select household_id, posicao into h_f, p_f
+    from public.household_members where usuario_id = f_id;
+  perform pg_temp.assert(h_f is not null and p_f = 1,
+    'novo usuario nasce com household individual e membresia posicao 1');
+
+  select count(*) into n from public.household_members where household_id = h_f;
+  perform pg_temp.assert(n = 1, 'o household do novo usuario tem so ele');
+
+  select count(*) into n from public.categorias where usuario_id = f_id;
+  perform pg_temp.assert(n = 13, 'as 13 categorias iniciais continuam sendo semeadas');
+
+  select count(*) into n from public.categorias
+   where usuario_id = f_id and household_id is distinct from h_f;
+  perform pg_temp.assert(n = 0,
+    'as categorias do provisionamento ja nascem com o household derivado');
+
+  -- A divergencia esperada da B1, registrada como asserção para nao passar
+  -- despercebida no cutover da B2.
+  perform pg_temp.assert(
+    (select household_id from public.household_members where usuario_id = a_id)
+    <> (select household_id from public.household_members where usuario_id = b_id),
+    'SOMBRA: A e B sao parceiros reciprocos mas seguem em households separados '
+    '(vinculo criado depois da 0008; a B2 reconcilia)');
+end $$;
+
+-- ------------------------------------- derivacao nos quatro tipos
+-- Os ids de household viajam por GUC porque o cliente NAO pode ler
+-- household_members — ler dali dentro do bloco furaria a propria sombra
+-- que estamos testando.
+do $$
+begin
+  perform set_config('teste.h_f',
+    (select household_id::text from public.household_members
+      where usuario_id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'), true);
+  perform set_config('teste.h_a',
+    (select household_id::text from public.household_members
+      where usuario_id = '11111111-1111-4111-8111-111111111111'), true);
+end $$;
+
+set local role authenticated;
+set local request.jwt.claims to '{"sub":"ffffffff-ffff-4fff-8fff-ffffffffffff","role":"authenticated"}';
+
+do $$
+declare
+  h_f uuid := current_setting('teste.h_f')::uuid;
+  h_a uuid := current_setting('teste.h_a')::uuid;
+  id_conta uuid; id_cartao uuid; id_categoria uuid; id_lanc uuid;
+  n bigint;
+begin
+  insert into public.contas (usuario_id, nome, saldo_atual, visibilidade)
+  values (auth.uid(), 'Conta de F', 100, 'privado') returning id into id_conta;
+  insert into public.cartoes (usuario_id, nome, limite, dia_fechamento, dia_vencimento, visibilidade)
+  values (auth.uid(), 'Cartao de F', 1000, 10, 17, 'privado') returning id into id_cartao;
+  insert into public.categorias (usuario_id, nome, classe_padrao, cor)
+  values (auth.uid(), 'Categoria de F', 'variavel', '#123456') returning id into id_categoria;
+  insert into public.lancamentos (usuario_id, tipo, valor, classe, categoria_id, visibilidade)
+  values (auth.uid(), 'gasto', 25, 'variavel', id_categoria, 'privado') returning id into id_lanc;
+
+  perform pg_temp.assert(
+    (select household_id from public.contas where id = id_conta) = h_f,
+    'conta nova deriva o household do dono');
+  perform pg_temp.assert(
+    (select household_id from public.cartoes where id = id_cartao) = h_f,
+    'cartao novo deriva o household do dono');
+  perform pg_temp.assert(
+    (select household_id from public.categorias where id = id_categoria) = h_f,
+    'categoria nova deriva o household do dono');
+  perform pg_temp.assert(
+    (select household_id from public.lancamentos where id = id_lanc) = h_f,
+    'lancamento novo deriva o household do dono');
+
+  -- payload forjado com o household de terceiro: o gatilho sobrescreve
+  insert into public.contas (usuario_id, nome, saldo_atual, visibilidade, household_id)
+  values (auth.uid(), 'Conta forjada', 10, 'privado', h_a) returning id into id_conta;
+  perform pg_temp.assert(
+    (select household_id from public.contas where id = id_conta) = h_f,
+    'household forjado no INSERT nao persiste: e sobrescrito pelo do dono');
+
+  insert into public.lancamentos (usuario_id, tipo, valor, classe, visibilidade, household_id)
+  values (auth.uid(), 'gasto', 5, 'variavel', 'privado', h_a) returning id into id_lanc;
+  perform pg_temp.assert(
+    (select household_id from public.lancamentos where id = id_lanc) = h_f,
+    'household forjado em lancamento tambem e sobrescrito');
+
+  select count(*) into n from public.contas where household_id = h_a and usuario_id = auth.uid();
+  perform pg_temp.assert(n = 0,
+    'ESTADO FINAL: nenhuma linha de F ficou apontando para o household de A');
+
+  -- household_id nao esta nos grants de UPDATE da 0006
+  begin
+    update public.contas set household_id = h_a where usuario_id = auth.uid();
+    perform pg_temp.assert(false, 'household_id nao deveria ser editavel pelo cliente');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'household_id nao foi concedida no UPDATE por coluna');
+  end;
+end $$;
+
+-- --------------------------- a sombra e fechada ao cliente
+do $$
+declare n bigint;
+begin
+  raise notice 'A sombra e inacessivel ao cliente:';
+
+  begin
+    select count(*) into n from public.households;
+    perform pg_temp.assert(false, 'authenticated nao deveria ler households');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'authenticated nao le households');
+  end;
+
+  begin
+    select count(*) into n from public.household_members;
+    perform pg_temp.assert(false, 'authenticated nao deveria ler household_members');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'authenticated nao le household_members');
+  end;
+
+  begin
+    insert into public.households (criado_por) values (auth.uid());
+    perform pg_temp.assert(false, 'authenticated nao deveria inserir household');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'authenticated nao insere household');
+  end;
+
+  begin
+    insert into public.household_members (household_id, usuario_id, posicao)
+    values (gen_random_uuid(), auth.uid(), 2);
+    perform pg_temp.assert(false, 'authenticated nao deveria criar membresia');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'authenticated nao cria membresia');
+  end;
+
+  begin
+    update public.household_members set posicao = 2 where usuario_id = auth.uid();
+    perform pg_temp.assert(false, 'authenticated nao deveria alterar membresia');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'authenticated nao altera membresia');
+  end;
+
+  begin
+    delete from public.household_members where usuario_id = auth.uid();
+    perform pg_temp.assert(false, 'authenticated nao deveria apagar membresia');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'authenticated nao apaga membresia');
+  end;
+
+  begin
+    perform app.household_de(auth.uid());
+    perform pg_temp.assert(false, 'o helper interno nao deveria ser executavel pelo cliente');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'app.household_de nao e executavel por authenticated');
+  end;
+end $$;
+
+set local role anon;
+
+do $$
+declare n bigint;
+begin
+  begin
+    select count(*) into n from public.households;
+    perform pg_temp.assert(false, 'anon nao deveria ler households');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'anon nao le households');
+  end;
+
+  begin
+    insert into public.household_members (household_id, usuario_id, posicao)
+    values (gen_random_uuid(), gen_random_uuid(), 1);
+    perform pg_temp.assert(false, 'anon nao deveria escrever membresia');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(true, 'anon nao escreve membresia');
+  end;
+end $$;
+
+-- ------------------------------ catalogo: gatilhos e privilegios
+reset role;
+
+do $$
+declare n bigint;
+begin
+  raise notice 'Catalogo de gatilhos e privilegios:';
+
+  select count(*) into n
+    from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+   where t.tgname = 'trg_congela_identidade'
+     and t.tgrelid = 'public.usuarios'::regclass
+     and p.proname = 'congela_identidade_usuario';
+  perform pg_temp.assert(n = 1, 'usuarios usa congela_identidade_usuario');
+
+  select count(*) into n
+    from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+   where t.tgname = 'trg_congela_identidade'
+     and t.tgrelid in ('public.contas'::regclass, 'public.cartoes'::regclass,
+                       'public.categorias'::regclass, 'public.lancamentos'::regclass)
+     and p.proname = 'congela_identidade';
+  perform pg_temp.assert(n = 4, 'as quatro tabelas com usuario_id usam congela_identidade');
+
+  select count(*) into n
+    from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+   where t.tgname = 'trg_deriva_household'
+     and t.tgrelid in ('public.contas'::regclass, 'public.cartoes'::regclass,
+                       'public.categorias'::regclass, 'public.lancamentos'::regclass)
+     and p.proname = 'deriva_household';
+  perform pg_temp.assert(n = 4, 'as quatro tabelas derivam household por gatilho');
+
+  select count(*) into n from information_schema.table_privileges
+   where grantee = 'authenticated' and table_schema = 'public' and privilege_type = 'UPDATE';
+  perform pg_temp.assert(n = 0,
+    'NENHUMA tabela de public tem UPDATE de tabela inteira para authenticated');
+
+  select count(*) into n from information_schema.column_privileges
+   where grantee = 'authenticated' and table_schema = 'public' and privilege_type = 'UPDATE';
+  perform pg_temp.assert(n = 26,
+    'os 26 grants de UPDATE por coluna da 0006 continuam valendo');
+
+  select count(*) into n from information_schema.column_privileges
+   where grantee = 'authenticated' and table_schema = 'public'
+     and privilege_type = 'UPDATE' and column_name = 'household_id';
+  perform pg_temp.assert(n = 0, 'household_id nao entrou em nenhum grant de UPDATE');
+
+  select count(*) into n from information_schema.table_privileges
+   where grantee in ('anon', 'authenticated') and table_schema = 'public'
+     and table_name in ('households', 'household_members');
+  perform pg_temp.assert(n = 0,
+    'households e household_members nao tem privilegio algum para anon nem authenticated');
+end $$;
+
+set local role authenticated;
+
 reset role;
 
 do $$ begin raise notice E'\nTodas as fronteiras seguraram.'; end $$;

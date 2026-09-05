@@ -29,11 +29,12 @@ Sem o `.env` o app sobe assim mesmo e mostra na tela o que falta configurar.
 | `npm run lint` | ESLint |
 | `npm test` | Testes da lógica pura (50/30/20, fatura, leitura de valores) |
 | `./supabase/tests/run_local.sh` | Sobe um Postgres descartável, aplica as migrações e **testa o RLS** |
+| `./supabase/tests/run_households_backfill.sh` | Testa o **upgrade**: dados primeiro, `0008` depois |
 
 ## Banco
 
 As migrações estão em `supabase/migrations/`, para rodar em ordem (`0001` →
-`0007`). Detalhes em [`supabase/README.md`](supabase/README.md).
+`0008`). Detalhes em [`supabase/README.md`](supabase/README.md).
 
 Tabelas da Fase 1: `usuarios`, `contas`, `cartoes`, `categorias`, `lancamentos`.
 
@@ -51,7 +52,7 @@ O vínculo de casal só vale quando **os dois lados se apontam**. Sem isso,
 escrever o id de alguém em `parceiro_id` não abre porta nenhuma — é o que o
 teste cobre no caso do usuário C.
 
-Rodando `./supabase/tests/run_local.sh`, 50 asserções verificam essas
+Rodando `./supabase/tests/run_local.sh`, 80 asserções verificam essas
 fronteiras contra um Postgres real (inclusive as tentativas de escrita
 indevida). Qualquer vazamento derruba o script.
 
