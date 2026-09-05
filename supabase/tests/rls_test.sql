@@ -414,6 +414,88 @@ begin
   perform pg_temp.assert(parceiro = b_id, 'vincular_parceiro() ainda refaz o vinculo');
 end $$;
 
+-- =====================================================================
+-- TAR-002A-C1 — Edicao do proprio perfil
+--
+-- A 0006 quebrou este caminho: app.congela_identidade() acessava
+-- new.usuario_id, campo que public.usuarios nao tem, e o plpgsql nao faz
+-- curto-circuito na condicao. Todo UPDATE de perfil pelo cliente morria
+-- com 'record "new" has no field "usuario_id"'.
+--
+-- Os testes da 0006 nao pegaram porque todos os casos em usuarios eram
+-- NEGATIVOS: paravam no privilegio de coluna antes de chegar ao gatilho.
+-- Faltava exatamente isto, um caso positivo.
+-- =====================================================================
+set local request.jwt.claims to '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated"}';
+
+do $$
+declare
+  funcao       text;
+  nome_final   text;
+  renda_final  numeric;
+begin
+  raise notice 'TAR-002A-C1 — edicao do proprio perfil:';
+
+  select p.proname into funcao
+    from pg_trigger t
+    join pg_proc p on p.oid = t.tgfoid
+   where t.tgrelid = 'public.usuarios'::regclass
+     and t.tgname = 'trg_congela_identidade';
+  perform pg_temp.assert(funcao = 'congela_identidade_usuario',
+    'usuarios usa a funcao dedicada, nao a das tabelas com usuario_id');
+
+  -- Exatamente o que a tela de Ajustes envia ao salvar.
+  update public.usuarios
+     set nome = 'Guilherme Mendonca',
+         renda_fixa_mensal = 5200.00
+   where id = auth.uid();
+
+  select nome, renda_fixa_mensal into nome_final, renda_final
+    from public.usuarios where id = auth.uid();
+
+  perform pg_temp.assert(nome_final = 'Guilherme Mendonca',
+    'o nome do proprio perfil persiste depois do UPDATE');
+  perform pg_temp.assert(renda_final = 5200.00,
+    'a renda fixa mensal do proprio perfil persiste depois do UPDATE');
+end $$;
+
+-- ---------------------------------------------------------------------
+-- A defesa em profundidade da 0007, exercitada de verdade.
+--
+-- Com os grants da 0006 no lugar, o corpo da funcao nunca roda: o
+-- privilegio de coluna recusa antes. Concedemos criado_em temporariamente
+-- para simular o cenario que essa defesa existe para cobrir — uma migracao
+-- futura reconceder UPDATE amplo por engano. Tudo dentro da transacao do
+-- teste, desfeito no rollback final.
+--
+-- criado_em, e nao id: uma troca de id tambem bateria no WITH CHECK do RLS,
+-- que levanta o mesmo 42501, e ai nao daria para saber quem barrou.
+-- ---------------------------------------------------------------------
+reset role;
+grant update (criado_em) on public.usuarios to authenticated;
+
+set local role authenticated;
+set local request.jwt.claims to '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated"}';
+
+do $$
+declare criado_final timestamptz;
+begin
+  begin
+    update public.usuarios set criado_em = timestamptz '2000-01-01' where id = auth.uid();
+    perform pg_temp.assert(false, 'o gatilho deveria barrar a troca de criado_em');
+  exception when insufficient_privilege then
+    perform pg_temp.assert(sqlerrm like '%criado_em%',
+      'usuarios: o gatilho barra criado_em mesmo com a coluna concedida (' || sqlerrm || ')');
+  end;
+
+  select criado_em into criado_final from public.usuarios where id = auth.uid();
+  perform pg_temp.assert(criado_final > timestamptz '2001-01-01',
+    'ESTADO FINAL: criado_em do perfil continua o original');
+end $$;
+
+reset role;
+revoke update (criado_em) on public.usuarios from authenticated;
+
 reset role;
 
 do $$ begin raise notice E'\nTodas as fronteiras seguraram.'; end $$;

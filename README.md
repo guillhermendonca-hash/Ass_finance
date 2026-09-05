@@ -33,7 +33,7 @@ Sem o `.env` o app sobe assim mesmo e mostra na tela o que falta configurar.
 ## Banco
 
 As migrações estão em `supabase/migrations/`, para rodar em ordem (`0001` →
-`0006`). Detalhes em [`supabase/README.md`](supabase/README.md).
+`0007`). Detalhes em [`supabase/README.md`](supabase/README.md).
 
 Tabelas da Fase 1: `usuarios`, `contas`, `cartoes`, `categorias`, `lancamentos`.
 
@@ -51,7 +51,7 @@ O vínculo de casal só vale quando **os dois lados se apontam**. Sem isso,
 escrever o id de alguém em `parceiro_id` não abre porta nenhuma — é o que o
 teste cobre no caso do usuário C.
 
-Rodando `./supabase/tests/run_local.sh`, 45 asserções verificam essas
+Rodando `./supabase/tests/run_local.sh`, 50 asserções verificam essas
 fronteiras contra um Postgres real (inclusive as tentativas de escrita
 indevida). Qualquer vazamento derruba o script.
 

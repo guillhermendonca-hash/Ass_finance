@@ -3,7 +3,7 @@
 ## Aplicar as migrações
 
 Pelo painel: **SQL Editor → New query**, cole e rode cada arquivo de
-`migrations/` **na ordem numérica** (0001 → 0006).
+`migrations/` **na ordem numérica** (0001 → 0007).
 
 Pela CLI:
 
@@ -22,6 +22,7 @@ supabase db push
 | `0004_api_privacidade.sql` | Agregados do parceiro (somar sem vazar o item) e vínculo de casal |
 | `0005_novo_usuario.sql` | Cria `usuarios` e semeia categorias no cadastro |
 | `0006_restringe_colunas_editaveis.sql` | **Privilégio de `UPDATE` por coluna**: a linha não muda de dono pelo cliente |
+| `0007_corrige_gatilho_identidade_usuario.sql` | Gatilho de identidade próprio para `usuarios`, que não tem `usuario_id` |
 
 ## As três esferas, em uma frase cada
 
@@ -40,7 +41,7 @@ psql "$DATABASE_URL" -f tests/rls_test.sql
 
 O script cria três usuários fictícios (dois vinculados, um com vínculo
 unilateral) e falha com erro se qualquer fronteira vazar. Roda dentro de uma
-transação e dá `rollback` no fim — não deixa resíduo no banco. São 45
+transação e dá `rollback` no fim — não deixa resíduo no banco. São 50
 asserções, e cada ataque confere também o **estado final da linha**: capturar
 a exceção não basta.
 
@@ -69,6 +70,13 @@ Há ainda um gatilho `trg_congela_identidade` como defesa em profundidade, para
 o caso de uma migração futura reconceder `UPDATE` amplo por engano. Ele só
 barra o que vem direto do cliente: dentro de uma função `SECURITY DEFINER` o
 `current_user` é o dono da função, então caminhos privilegiados seguem livres.
+
+`usuarios` usa uma função de gatilho separada, `app.congela_identidade_usuario()`
+(migração `0007`), porque essa tabela não tem `usuario_id`. A função da `0006`
+acessava esse campo atrás de uma condição `tg_table_name <> 'usuarios'`, e o
+plpgsql **não** faz curto-circuito ali — a expressão inteira é avaliada como uma
+só, o campo é resolvido de qualquer forma, e todo `UPDATE` de perfil pelo cliente
+morria com `record "new" has no field "usuario_id"`.
 
 ## Nota honesta sobre o agregado
 
