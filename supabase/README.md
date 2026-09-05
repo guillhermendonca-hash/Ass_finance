@@ -2,15 +2,22 @@
 
 ## Aplicar as migrações
 
-Pelo painel: **SQL Editor → New query**, cole e rode cada arquivo de
-`migrations/` **na ordem numérica** (0001 → 0008).
-
-Pela CLI:
+Migrações versionadas são aplicadas **pelo Supabase CLI**, e apenas dentro de
+uma janela de deploy explicitamente autorizada:
 
 ```bash
 supabase link --project-ref SEU_REF
 supabase db push
 ```
+
+Não cole migração no SQL Editor do painel. O `db push` mantém o histórico de
+migrações do projeto e aplica cada arquivo na fronteira transacional certa; a
+execução manual não faz nem uma coisa nem outra, e deixa o histórico mentindo
+sobre o que está aplicado.
+
+> **A `0008` não pode ser implantada isoladamente.** O backfill fotografa
+> `parceiro_id` no momento em que roda; vínculos criados ou desfeitos depois
+> divergem. Não há deploy intermediário entre a fatia B1 e a B2.
 
 ## O que cada arquivo faz
 
@@ -46,11 +53,23 @@ transação e dá `rollback` no fim — não deixa resíduo no banco. São 80
 asserções, e cada ataque confere também o **estado final da linha**: capturar
 a exceção não basta.
 
-Para escolher onde o cluster descartável é criado:
+Para escolher **onde** o cluster descartável é criado:
 
 ```bash
-PGTEST_DIR=$(mktemp -d) ./supabase/tests/run_local.sh
+PGTEST_PARENT=/caminho/pai ./supabase/tests/run_local.sh
 ```
+
+`PGTEST_PARENT` é só o diretório **pai**. O runner cria dentro dele um
+subdiretório próprio (`ass-finance-pgtest.XXXXXX`), grava ali um marcador de
+posse com um valor desta execução, e no fim remove **apenas esse filho** — nunca
+o pai, nunca nada que já estivesse lá. Se, na hora de limpar, o caminho não
+casar mais com pai+prefixo ou o marcador não bater, a remoção é recusada e o
+diretório fica preservado, com aviso.
+
+O pai precisa existir, ser diretório e ser caminho absoluto; caminho relativo,
+inexistente ou apontando para arquivo é recusado antes de qualquer coisa ser
+criada. Rodando como root, o pai também precisa ser atravessável pelo usuário
+`postgres` (`chmod o+x`), e o runner diz isso em vez de falhar no meio.
 
 ### O segundo arnês: upgrade
 
@@ -59,12 +78,25 @@ então o backfill da `0008` nunca roda ali. Para exercitar a ordem real de um
 upgrade — dados primeiro, migração depois — existe um segundo arnês:
 
 ```bash
-PGTEST_DIR=$(mktemp -d) ./supabase/tests/run_households_backfill.sh
+PGTEST_PARENT=/caminho/pai ./supabase/tests/run_households_backfill.sh
 ```
 
 Ele aplica `0001`–`0007`, cria um par recíproco, um vínculo unilateral e um
-usuário isolado com entidades de cada tipo, só então aplica a `0008` e verifica
-o agrupamento. São 23 asserções.
+usuário isolado com entidades de cada tipo — e então faz duas coisas.
+
+**Primeiro prova que a `0008` é atômica.** Instala um gatilho que derruba a
+migração no meio do backfill, num ponto em que ela já criou tabelas, adicionou
+colunas e desabilitou os quatro `trg_atualizado_em`. Exige que a migração falhe,
+e verifica que o rollback não deixou resíduo nenhum — inclusive que os carimbos
+voltaram a existir **e a estar habilitados**. São 8 asserções.
+
+**Depois aplica a `0008` de verdade** e verifica o agrupamento: mais 23
+asserções. Total de 31.
+
+Isso funciona porque cada migração roda com `psql -1`, ou seja, o arquivo
+inteiro é uma única transação. Sem isso, uma falha no meio deixaria DDL aplicada
+e gatilhos desligados. Os arquivos de teste, ao contrário, rodam sem `-1`,
+porque administram a própria transação.
 
 ## Households (fundação transicional)
 
